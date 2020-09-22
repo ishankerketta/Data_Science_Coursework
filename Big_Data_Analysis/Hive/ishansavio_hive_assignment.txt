@@ -1,0 +1,382 @@
+-- Data Ingestion and Processing Assignment
+-- submitted by Ishan Savio Kerketta
+
+--Problem Statement
+
+-- We have the data of New York City yellow taxis records in November and December 2017
+-- We need to make basic quality checks and prepare a clean, orc partitioned dataset
+-- We need to explore and analyze the cleaned data
+-- We need to perform certain specific analysis using the data
+
+-- Commented Queries:
+
+-- IMPORTANT command to add JAR file  
+ADD JAR /opt/cloudera/parcels/CDH/lib/hive/lib/hive-hcatalog-core-1.1.0-cdh5.11.2.jar;
+
+-- Drop table if already created
+drop table yellow_taxis_table;
+
+-- Creating an EXTERNAL TABLE with TPEP data on yellow taxis in November-December 2017 
+create external table if not exists yellow_taxis_table(VendorID string, tpep_pickup_datetime timestamp, 
+tpep_dropoff_datetime timestamp, passenger_count int, trip_distance double, 
+RatecodeID string, store_and_fwd_flag string, PULocationID string, DOLocationID string, payment_type string, 
+fare_amount double, extra double, mta_tax double, tip_amount double, tolls_amount double, 
+improvement_surcharge double, total_amount double) 
+ROW FORMAT DELIMITED
+FIELDS TERMINATED BY ','
+location '/common_folder/nyc_taxi_data/'
+tblproperties ("skip.header.line.count"="1");
+
+-- Checking the top 5 rows of the table to check if properly created
+select * from yellow_taxis_table limit 5;
+
+-- Showing details about the created table
+describe formatted yellow_taxis_table;
+
+-- Number of records
+select count(*) from yellow_taxis_table;
+
+-- 1174569
+
+--Number of records per TPEP provider
+select count(*)
+from yellow_taxis_table
+group by vendorid;
+
+-- 1    -- 647183
+-- 2    -- 527386
+
+-- Checking for errors in RatecodeID
+select distinct ratecodeid
+from yellow_taxis_table;
+
+--invalid ratecode id found '99'
+
+-- Checking for errors in Store_and Forward Flag 
+select distinct store_and_fwd_flag
+from yellow_taxis_table;
+
+-- no errors
+
+-- Checking for errors in Payment type
+select distinct payment_type
+from yellow_taxis_table;
+
+-- no errors
+
+-- Checking for unusual number of passengers
+select count(*)
+from yellow_taxis_table
+where passenger_count = 0;
+
+-- 6824 records had 0 passengers
+
+-- Checking for unusual trip distance
+select count(*)
+from yellow_taxis_table
+where trip_distance = 0;
+
+-- 7402 rides had a trip distance of 0 miles
+
+-- Checking for negative values in fare amount charged to passengers
+select count(*)
+from yellow_taxis_table
+where fare_amount < 0;
+
+-- 558 records have negative amounts charged to passengers
+-- This is unusual
+
+-- Checking for negative values in total amount charged to passengers
+select count(*) 
+from yellow_taxis_table 
+where tolls_amount < 0;
+
+-- 3 records have negative tolls amount
+-- This is unusual
+
+-- Checking for negative values in extra charge 
+select count(*)
+from yellow_taxis_table
+where extra < 0;
+
+-- 1430 records have negative extra charge
+-- This is unusual
+
+-- Checking if the records have negative values for MTA tax
+select count(*) 
+from yellow_taxis_table 
+where mta_tax < 0;
+
+-- 544 records have negative mta tax
+
+-- Checking if the Pickup datetime information has values
+-- other than November and December of 2017
+select *
+from yellow_taxis_table
+where year(tpep_pickup_datetime) != 2017 
+or month(tpep_pickup_datetime) != 11
+and month(tpep_pickup_datetime) != 12;
+
+-- 14 records have pick up date-time details outside of Analysis range
+
+select *
+from yellow_taxis_table
+where year(tpep_dropoff_datetime) != 2017
+and year(tpep_dropoff_datetime) != 2018;
+
+-- 1 record has pickup date-time in 2017 but dropoff datetime in 2019
+-- This is unusual
+
+-- Partitioning the data  
+-- Running IMPORTANT COMMANDS before creating partitions 
+SET hive.exec.max.dynamic.partitions=100000;
+SET hive.exec.max.dynamic.partitions.pernode=100000;
+
+--Dropping partitioned table if already created
+drop table yellow_taxis_orc;
+
+-- Creating external table with partitions, buckets and orc files
+create external table if not exists yellow_taxis_orc
+(VendorID string, tpep_pickup_datetime timestamp, 
+tpep_dropoff_datetime timestamp, passenger_count int, trip_distance double, 
+RatecodeID string, store_and_fwd_flag string, PULocationID string, DOLocationID string, payment_type string, 
+fare_amount double, extra double, mta_tax double, tip_amount double, tolls_amount double, 
+improvement_surcharge double, total_amount double) partitioned by (mnth int, yr int)
+clustered by (vendorid) into 4 buckets 
+stored as orc location '/user/hive/warehouse/ishansavio_taxi' 
+tblproperties ("orc.compress"="SNAPPY");
+
+-- Then inserting the data in the table 
+insert overwrite table yellow_taxis_orc partition(mnth, yr)
+select vendorid, tpep_pickup_datetime, tpep_dropoff_datetime, passenger_count, trip_distance, 
+ratecodeid, store_and_fwd_flag, pulocationid, dolocationid, payment_type, fare_amount, extra, mta_tax, 
+tip_amount, tolls_amount, improvement_surcharge, total_amount, 
+month(tpep_pickup_datetime) as mnth, year(tpep_pickup_datetime) as yr 
+from yellow_taxis_table;
+
+-- Data Cleaning - DROPPING ERRONOUS DATA
+
+-- Dropping all unusual records by overwriting with data without any unusual nature
+insert overwrite table yellow_taxis_orc partition(mnth, yr)
+select *
+from yellow_taxis_orc
+where ratecodeid != '99' and passenger_count != 0 
+and fare_amount >= 0 and tolls_amount >= 0 and extra >= 0 
+and year(tpep_pickup_datetime) = 2017
+or (month(tpep_pickup_datetime) = 11
+and month(tpep_pickup_datetime) = 12)
+and (year(tpep_dropoff_datetime) = 2017
+and year(tpep_dropoff_datetime) = 2018);
+
+-- Dropped records with ratecode id '99'
+-- Dropped records with Passenger count 0
+-- Dropped records with negative fare amount
+-- Dropped records with negative tolls amount
+-- Dropped records with negative extra charge
+-- Dropped records with Pickup timestamps other than November and December 2017
+-- Dropped records with Dropoff timestamps with year other than 2017 and 2018
+-- Keeping Dropoff timestamps with year 2018 because 
+-- Pickup timestamp was in December 2017 and because of the duration of the trip,
+-- the Dropoff Timestamp is on the next day, which is also January 2018 
+
+-- Number of records in cleaned data
+select count(*)
+from yellow_taxis_orc;
+
+-- 1167183
+
+
+-- ANALYSIS I --
+
+-- 1. Comparing overall average fare per trip for November and December 2017
+
+-- Average fare amount of yellow taxis in November 2017
+select avg(fare_amount)
+from yellow_taxis_orc
+where mnth = 11;
+
+-- 13.11
+
+-- Average fare amount of yellow taxis in December 2017
+select avg(fare_amount)
+from yellow_taxis_orc
+where mnth = 12;
+
+-- 12.90
+
+-- Hence, Average fare in November is more than that of December.
+
+-- Exploring the data
+
+-- Minimum and Maximum fare overall
+select min(fare_amount), max(fare_amount)
+from yellow_taxis_orc;
+
+-- Minimum fare overall: 0
+-- Maximum fare overall: 650
+
+-- Average duration of trip
+select avg(unix_timestamp(tpep_dropoff_datetime)/60 - unix_timestamp(tpep_pickup_datetime)/60)
+from yellow_taxis_orc;
+
+-- 18.17 minutes
+
+-- 2. Frequency of Number of passengers per trip in Descencding order
+select passenger_count, count(*) as frequency
+from yellow_taxis_orc
+group by passenger_count
+order by frequency desc;
+
+-- 1    -- 827156
+-- 2    -- 176772
+-- 5    -- 54520
+-- 3    -- 50662
+-- 6    -- 33117
+-- 4    -- 24930
+-- 7    -- 12
+-- 8    -- 3
+-- 9    -- 1
+
+-- Most passengers travel alone i.e. 827156 times
+-- 176772 times (second highest frequency), a passenger travels with one other passenger
+
+-- 3. Most preferred mode of payment
+select payment_type, count(*) as frequency
+from yellow_taxis_orc
+group by payment_type
+order by frequency desc;
+
+-- The most preferred mode of payment is 1 i.e. by Credit card
+-- 785734 times
+
+-- 4. Comparing average tip paid per trip to percentiles of tip paid
+
+-- Average tip paid per trip
+select avg(tip_amount)
+from yellow_taxis_orc;
+
+-- 1.86
+
+-- Checking 25th, 50th and 75th percentiles of tip amount
+select percentile_approx(tip_amount, 0.25) as 25th_percentile, 
+percentile_approx(tip_amount, 0.50) as 50th_percentile, 
+percentile_approx(tip_amount, 0.75) as 75th_percentile
+from yellow_taxis_orc;
+
+-- 25th percentile = 0
+-- 50th percentile = 1.35
+-- 75th percentile = 2.45
+
+-- Since, the Average/Mean tip amount is greater than the Median (50th percentile) of tip amount
+-- It is safe to say that tip amount is skewed towards the right.
+-- Hence, 'Average tip' amount does NOT represent central tendency in the best way.
+
+-- 5. Fraction of total trips that have an extra charge levied
+
+-- Fraction in whole
+select extra_type, count(*) as trips 
+    from(select case
+     when extra > 0 then "Charged Extra"
+     else "Not charged Extra" 
+     end as extra_type
+     from yellow_taxis_orc)sub
+group by extra_type;
+
+-- Charged Extra        -- 539589
+-- Not Charged Extra    -- 627594
+
+-- Fraction in percentage terms
+select 100.0*sum(case when extra > 0 then 1 else 0 end)/count(*) as Charged_Extra,
+       100.0*sum(case when extra <= 0 then 1 else 0 end)/count(*) as Not_Charged_Extra
+from yellow_taxis_orc;
+
+-- 46.23 % of the trips have extra charge levied
+
+-- ANALYSIS II --
+
+-- 1. Correlation between the 'number of passengers' on any given trip and the 'tip paid per trip'
+select corr(passenger_count, tip_amount)
+from yellow_taxis_orc;
+
+--  The correlation is -0.005, i.e. minimum negative correlation (very close to no correlation)
+-- Tip amount is not related to number of passengers
+
+-- 2. Segregate the data into five segments of 'tip paid': [0-5), [5-10), [10-15) , [15-20) and >=20. 
+-- Calculate the percentage share of each bucket (i.e. the fraction of trips falling in each bucket)
+
+-- Total number of trips
+select count(*) as total_trips
+from yellow_taxis_orc;
+
+-- 1167183 trips
+-- We will use this in the 'percentage share of tip' formula
+
+-- Segregation of data into segments
+select tip_paid, 100.0*count(*) / 1167183.0 as Perc_Share_Tip from(select case
+           when tip_amount >= 0 and tip_amount < 5    then '[0 - 5)'
+           when tip_amount >= 5 and tip_amount < 10   then '[5 - 10)'
+           when tip_amount >= 10 and tip_amount < 15  then '[10 - 15)'
+           when tip_amount >= 15 and tip_amount < 20  then '[15 - 20)'
+           else '20 and above' 
+     end as tip_paid
+     from yellow_taxis_orc)sub
+group by tip_paid;
+
+
+-- tip_paid         -- perc_share_tip
+-- 20 and above     -- 0.1%
+-- [0-5)            -- 92%
+-- [5-10)           -- 2%
+-- [10-15)          -- 0.2%
+-- [15-20)          -- 5.7%
+
+-- Most passengers pay a tip between 0 and 5 dollars
+
+-- 3. Which month has a greater average 'speed' - November or December?
+
+-- Average Speed of trips in November in miles per hour
+select avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600))
+as Average_Speed_November
+from yellow_taxis_orc
+where mnth = 11;
+
+-- 10.98 miles per hour
+
+-- Average Speed of trips in December in miles per hour
+select avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600))
+as Average_Speed_December
+from yellow_taxis_orc
+where mnth = 12;
+
+-- 11.08 miles per hour
+
+-- Thus, December has a greater average speed
+
+-- 4. Average speed of the most happening days of the year, 
+-- i.e. 31st December (New year's eve) and 25th December (Christmas)
+
+-- Average speed of trips on December 25, 2017 (Christmas) in miles per hour
+select avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600))
+as Average_Speed_December
+from yellow_taxis_orc
+where mnth = 12 and day(tpep_pickup_datetime) = 25;
+
+-- 15.24 miles per hour
+
+-- Average speed of trips on December 31, 2017 (New Year's Eve) in miles per hour
+select avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600))
+as Average_Speed_December
+from yellow_taxis_orc
+where mnth = 12 and day(tpep_pickup_datetime) = 31;
+
+-- 13.21 miles per hour
+
+-- Average speed of trips overall
+select avg(trip_distance/((unix_timestamp(tpep_dropoff_datetime) - unix_timestamp(tpep_pickup_datetime))/3600))
+as Average_Speed_December
+from yellow_taxis_orc;
+
+-- 11.03 miles per hour
+
+-- The average speed of trip is higher on happening days like Christmas and New Year's eve 
+-- compared to overall average speed
