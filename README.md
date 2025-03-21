@@ -5,7 +5,7 @@ This repository contains all projects done during the data science course.
 ## Course 1- Introduction to Data Management
 This course covered the languages of data science and data preparation.
 
-### Investment Case Study
+#### Investment Case Study
 Using data from crunchbase.com, Sparkfunds(an asset management company) wants make investment in a few companies. The goal of this analysis was to identify global trends in investment to make effective decisions.
 Language: R
 
